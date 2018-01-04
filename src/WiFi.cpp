@@ -33,31 +33,26 @@
 #define WIFI_101_NO_TIME_H
 #endif
 
-#include "utility/WiFiSocket.h"
-
 #include "WiFi101.h"
 
 extern "C" {
   #include "bsp/include/nm_bsp.h"
   #include "bsp/include/nm_bsp_arduino.h"
+  #include "socket/include/socket_buffer.h"
+  #include "socket/include/m2m_socket_host_if.h"
+  #include "driver/source/nmasic.h"
   #include "driver/include/m2m_periph.h"
   #include "driver/include/m2m_ssl.h"
-  #include "driver/include/m2m_wifi.h"
 }
 
 static void wifi_cb(uint8_t u8MsgType, void *pvMsg)
-{
-	WiFi.handleEvent(u8MsgType, pvMsg);
-}
-
-void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 {
 	switch (u8MsgType) {
 		case M2M_WIFI_RESP_DEFAULT_CONNECT:
 		{
 			tstrM2MDefaultConnResp *pstrDefaultConnResp = (tstrM2MDefaultConnResp *)pvMsg;
 			if (pstrDefaultConnResp->s8ErrorCode) {
-				_status = WL_DISCONNECTED;
+				WiFi._status = WL_DISCONNECTED;
 			}
 		}
 		break;
@@ -67,57 +62,51 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 			tstrM2mWifiStateChanged *pstrWifiState = (tstrM2mWifiStateChanged *)pvMsg;
 			if (pstrWifiState->u8CurrState == M2M_WIFI_CONNECTED) {
 				//SERIAL_PORT_MONITOR.println("wifi_cb: M2M_WIFI_RESP_CON_STATE_CHANGED: CONNECTED");
-				if (_mode == WL_STA_MODE && !_dhcp) {
-					_status = WL_CONNECTED;
+				if (WiFi._mode == WL_STA_MODE && !WiFi._dhcp) {
+					WiFi._status = WL_CONNECTED;
 
-#ifdef CONF_PERIPH
 					// WiFi led ON.
 					m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 0);
-#endif
-				} else if (_mode == WL_AP_MODE) {
-					_status = WL_AP_CONNECTED;
+				} else if (WiFi._mode == WL_AP_MODE) {
+					WiFi._status = WL_AP_CONNECTED;
 				}
 			} else if (pstrWifiState->u8CurrState == M2M_WIFI_DISCONNECTED) {
 				//SERIAL_PORT_MONITOR.println("wifi_cb: M2M_WIFI_RESP_CON_STATE_CHANGED: DISCONNECTED");
-				if (_mode == WL_STA_MODE) {
-					_status = WL_DISCONNECTED;
-					if (_dhcp) {
-						_localip = 0;
-						_submask = 0;
-						_gateway = 0;
+				if (WiFi._mode == WL_STA_MODE) {
+					WiFi._status = WL_DISCONNECTED;
+					if (WiFi._dhcp) {
+						WiFi._localip = 0;
+						WiFi._submask = 0;
+						WiFi._gateway = 0;
 					}
 					// Close sockets to clean state
 					// Clients will need to reconnect once the physical link will be re-established
-					for (int i = 0; i < MAX_SOCKET; i++) {
-						WiFiSocket.close(i);
+					for (int i=0; i < TCP_SOCK_MAX; i++) {
+							WiFi._client[i].stop();
 					}
-				} else if (_mode == WL_AP_MODE) {
-					_status = WL_AP_LISTENING;
+				} else if (WiFi._mode == WL_AP_MODE) {
+					WiFi._status = WL_AP_LISTENING;
 				}
-#ifdef CONF_PERIPH
 				// WiFi led OFF (rev A then rev B).
 				m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 1);
 				m2m_periph_gpio_set_val(M2M_PERIPH_GPIO4, 1);
-#endif
 			}
 		}
 		break;
 
 		case M2M_WIFI_REQ_DHCP_CONF:
 		{
-			if (_mode == WL_STA_MODE) {
+			if (WiFi._mode == WL_STA_MODE) {
 				tstrM2MIPConfig *pstrIPCfg = (tstrM2MIPConfig *)pvMsg;
-				_localip = pstrIPCfg->u32StaticIP;
-				_submask = pstrIPCfg->u32SubnetMask;
-				_gateway = pstrIPCfg->u32Gateway;
-				
-				_status = WL_CONNECTED;
+				WiFi._localip = pstrIPCfg->u32StaticIP;
+				WiFi._submask = pstrIPCfg->u32SubnetMask;
+				WiFi._gateway = pstrIPCfg->u32Gateway;
 
-#ifdef CONF_PERIPH
+				WiFi._status = WL_CONNECTED;
+
 				// WiFi led ON (rev A then rev B).
 				m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 0);
 				m2m_periph_gpio_set_val(M2M_PERIPH_GPIO4, 0);
-#endif
 			}
 			/*uint8_t *pu8IPAddress = (uint8_t *)pvMsg;
 			SERIAL_PORT_MONITOR.print("wifi_cb: M2M_WIFI_REQ_DHCP_CONF: IP is ");
@@ -134,7 +123,7 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 
 		case M2M_WIFI_RESP_CURRENT_RSSI:
 		{
-			_resolve = *((int8_t *)pvMsg);
+			WiFi._resolve = *((int8_t *)pvMsg);
 		}
 		break;
 
@@ -144,18 +133,18 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 			//SERIAL_PORT_MONITOR.println("wifi_cb: M2M_WIFI_RESP_PROVISION_INFO");
 
 			if (pstrProvInfo->u8Status == M2M_SUCCESS) {
-				memset(_ssid, 0, M2M_MAX_SSID_LEN);
-				memcpy(_ssid, (char *)pstrProvInfo->au8SSID, strlen((char *)pstrProvInfo->au8SSID));
-				_mode = WL_STA_MODE;
-				_localip = 0;
-				_submask = 0;
-				_gateway = 0;
+				memset(WiFi._ssid, 0, M2M_MAX_SSID_LEN);
+				memcpy(WiFi._ssid, (char *)pstrProvInfo->au8SSID, strlen((char *)pstrProvInfo->au8SSID));
+				WiFi._mode = WL_STA_MODE;
+				WiFi._localip = 0;
+				WiFi._submask = 0;
+				WiFi._gateway = 0;
 				m2m_wifi_connect((char *)pstrProvInfo->au8SSID, strlen((char *)pstrProvInfo->au8SSID),
 						pstrProvInfo->u8SecType, pstrProvInfo->au8Password, M2M_WIFI_CH_ALL);
 			} else {
-				_status = WL_PROVISIONING_FAILED;
+				WiFi._status = WL_PROVISIONING_FAILED;
 				//SERIAL_PORT_MONITOR.println("wifi_cb: Provision failed.\r\n");
-				beginProvision();
+				WiFi.beginProvision();
 			}
 		}
 		break;
@@ -164,7 +153,7 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 		{
 			tstrM2mScanDone *pstrInfo = (tstrM2mScanDone *)pvMsg;
 			if (pstrInfo->u8NumofCh >= 1) {
-				_status = WL_SCAN_COMPLETED;
+				WiFi._status = WL_SCAN_COMPLETED;
 			}
 		}
 		break;
@@ -173,20 +162,20 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 		{
 			tstrM2mWifiscanResult *pstrScanResult = (tstrM2mWifiscanResult *)pvMsg;
 			uint16_t scan_ssid_len = strlen((const char *)pstrScanResult->au8SSID);
-			memset(_scan_ssid, 0, M2M_MAX_SSID_LEN);
+			memset(WiFi._scan_ssid, 0, M2M_MAX_SSID_LEN);
 			if (scan_ssid_len) {
-				memcpy(_scan_ssid, (const char *)pstrScanResult->au8SSID, scan_ssid_len);
+				memcpy(WiFi._scan_ssid, (const char *)pstrScanResult->au8SSID, scan_ssid_len);
 			}
-			if (_remoteMacAddress) {
+			if (WiFi._remoteMacAddress) {
 				// reverse copy the remote MAC
 				for(int i = 0; i < 6; i++) {
-					_remoteMacAddress[i] = pstrScanResult->au8BSSID[5-i];
+					WiFi._remoteMacAddress[i] = pstrScanResult->au8BSSID[5-i];
 				}
 			}
-			_resolve = pstrScanResult->s8rssi;
-			_scan_auth = pstrScanResult->u8AuthType;
-			_scan_channel = pstrScanResult->u8ch;
-			_status = WL_SCAN_COMPLETED;
+			WiFi._resolve = pstrScanResult->s8rssi;
+			WiFi._scan_auth = pstrScanResult->u8AuthType;
+			WiFi._scan_channel = pstrScanResult->u8ch;
+			WiFi._status = WL_SCAN_COMPLETED;
 		}
 		break;
 
@@ -194,24 +183,24 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 		{
 			tstrM2MConnInfo	*pstrConnInfo = (tstrM2MConnInfo*)pvMsg;
 
-			if (_remoteMacAddress) {
+			if (WiFi._remoteMacAddress) {
 				// reverse copy the remote MAC
 				for(int i = 0; i < 6; i++) {
-					_remoteMacAddress[i] = pstrConnInfo->au8MACAddress[5-i];
+					WiFi._remoteMacAddress[i] = pstrConnInfo->au8MACAddress[5-i];
 				}
-				_remoteMacAddress = 0;
+				WiFi._remoteMacAddress = 0;
 			}
 
-			strcpy((char *)_ssid, pstrConnInfo->acSSID);
+			strcpy((char *)WiFi._ssid, pstrConnInfo->acSSID);
 		}
 		break;
 
 		case M2M_WIFI_RESP_GET_SYS_TIME:
 		{
-			if (_resolve != 0) {
-				memcpy((tstrSystemTime *)_resolve, pvMsg, sizeof(tstrSystemTime));
+			if (WiFi._resolve != 0) {
+				memcpy((tstrSystemTime *)WiFi._resolve, pvMsg, sizeof(tstrSystemTime));
 
-				_resolve = 0;
+				WiFi._resolve = 0;
 			}
 		}
 		break;
@@ -221,42 +210,27 @@ void WiFiClass::handleEvent(uint8_t u8MsgType, void *pvMsg)
 	}
 }
 
-static void resolve_cb(uint8_t * hostName, uint32_t hostIp)
+static void resolve_cb(uint8_t * /* hostName */, uint32_t hostIp)
 {
-	WiFi.handleResolve(hostName, hostIp);
+	WiFi._resolve = hostIp;
 }
 
-void WiFiClass::handleResolve(uint8_t * /*hostName*/, uint32_t hostIp)
-{
-	_resolve = hostIp;
-}
-
-static void socket_cb(SOCKET sock, uint8 u8Msg, void *pvMsg)
-{
-	WiFiSocket.eventCallback(sock, u8Msg, pvMsg);
-}
-
-void ping_cb(uint32 u32IPAddr, uint32 u32RTT, uint8 u8ErrorCode)
-{
-	WiFi.handlePingResponse(u32IPAddr, u32RTT, u8ErrorCode);
-}
-
-void WiFiClass::handlePingResponse(uint32 u32IPAddr, uint32 u32RTT, uint8 u8ErrorCode)
+static void ping_cb(uint32 u32IPAddr, uint32 u32RTT, uint8 u8ErrorCode)
 {
 	if (PING_ERR_SUCCESS == u8ErrorCode) {
 		// Ensure this ICMP reply comes from requested IP address
-		if (_resolve == u32IPAddr) {
-			_resolve = (uint32_t)u32RTT;
+		if (WiFi._resolve == u32IPAddr) {
+			WiFi._resolve = (uint32_t)u32RTT;
 		} else {
 			// Another network device replied to the our ICMP request
-			_resolve = (uint32_t)WL_PING_DEST_UNREACHABLE;
+			WiFi._resolve = (uint32_t)WL_PING_DEST_UNREACHABLE;
 		}
 	} else if (PING_ERR_DEST_UNREACH == u8ErrorCode) {
-		_resolve = (uint32_t)WL_PING_DEST_UNREACHABLE;
+		WiFi._resolve = (uint32_t)WL_PING_DEST_UNREACHABLE;
 	} else if (PING_ERR_TIMEOUT == u8ErrorCode) {
-		_resolve = (uint32_t)WL_PING_TIMEOUT;
+		WiFi._resolve = (uint32_t)WL_PING_TIMEOUT;
 	} else {
-		_resolve = (uint32_t)WL_PING_ERROR;
+		WiFi._resolve = (uint32_t)WL_PING_ERROR;
 	}
 }
 
@@ -287,17 +261,16 @@ int WiFiClass::init()
 	param.pfAppWifiCb = wifi_cb;
 	ret = m2m_wifi_init(&param);
 	if (M2M_SUCCESS != ret && M2M_ERR_FW_VER_MISMATCH != ret) {
-#ifdef CONF_PERIPH
 		// Error led ON (rev A then rev B).
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO18, 0);
 		m2m_periph_gpio_set_dir(M2M_PERIPH_GPIO6, 1);
-#endif
 		return ret;
 	}
 
 	// Initialize socket API and register socket callback:
 	socketInit();
-	registerSocketCallback(socket_cb, resolve_cb);
+	socketBufferInit();
+	registerSocketCallback(socketBufferCb, resolve_cb);
 	_init = 1;
 	_status = WL_IDLE_STATUS;
 	_localip = 0;
@@ -314,7 +287,6 @@ int WiFiClass::init()
 		m2m_ssl_set_active_ciphersuites(SSL_NON_ECC_CIPHERS_AES_128 | SSL_NON_ECC_CIPHERS_AES_256);
 	}
 
-#ifdef CONF_PERIPH
 	// Initialize IO expander LED control (rev A then rev B)..
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 1);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 1);
@@ -328,7 +300,6 @@ int WiFiClass::init()
 	m2m_periph_gpio_set_dir(M2M_PERIPH_GPIO4, 1);
 	m2m_periph_gpio_set_dir(M2M_PERIPH_GPIO5, 1);
 	m2m_periph_gpio_set_dir(M2M_PERIPH_GPIO6, 1);
-#endif
 
 	return ret;
 }
@@ -340,7 +311,7 @@ extern "C" {
 char* WiFiClass::firmwareVersion()
 {
 	tstrM2mRev rev;
-	
+
 	if (!_init) {
 		init();
 	}
@@ -360,7 +331,7 @@ uint8_t WiFiClass::begin()
 	if (!_init) {
 		init();
 	}
-	
+
 	// Connect to router:
 	if (_dhcp) {
 		_localip = 0;
@@ -421,7 +392,7 @@ uint8_t WiFiClass::startConnect(const char *ssid, uint8_t u8SecType, const void 
 	if (!_init) {
 		init();
 	}
-	
+
 	// Connect to router:
 	if (_dhcp) {
 		_localip = 0;
@@ -509,7 +480,7 @@ uint8_t WiFiClass::startAP(const char *ssid, uint8_t u8SecType, const void *pvAu
 	strcpy((char *)&strM2MAPConfig.au8SSID, ssid);
 	strM2MAPConfig.u8ListenChannel = channel;
 	strM2MAPConfig.u8SecType = u8SecType;
-	if (_localip == 0) { 
+	if (_localip == 0) {
 		strM2MAPConfig.au8DHCPServerIP[0] = 192;
 		strM2MAPConfig.au8DHCPServerIP[1] = 168;
 		strM2MAPConfig.au8DHCPServerIP[2] = 1;
@@ -549,11 +520,9 @@ uint8_t WiFiClass::startAP(const char *ssid, uint8_t u8SecType, const void *pvAu
 	_submask = 0x00FFFFFF;
 	_gateway = _localip;
 
-#ifdef CONF_PERIPH
 	// WiFi led ON (rev A then rev B).
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 0);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO4, 0);
-#endif
 
 	return _status;
 }
@@ -615,11 +584,9 @@ uint8_t WiFiClass::startProvision(const char *ssid, const char *url, uint8_t cha
 	_submask = 0x00FFFFFF;
 	_gateway = _localip;
 
-#ifdef CONF_PERIPH
 	// WiFi led ON (rev A then rev B).
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 0);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO4, 0);
-#endif
 
 	return _status;
 }
@@ -682,27 +649,15 @@ void WiFiClass::hostname(const char* name)
 
 void WiFiClass::disconnect()
 {
-	// Close sockets to clean state
-	for (int i = 0; i < MAX_SOCKET; i++) {
-		WiFiSocket.close(i);
-	}
-
 	m2m_wifi_disconnect();
 
-#ifdef CONF_PERIPH
 	// WiFi led OFF (rev A then rev B).
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 1);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO4, 1);
-#endif
 }
 
 void WiFiClass::end()
 {
-	// Close sockets to clean state
-	for (int i = 0; i < MAX_SOCKET; i++) {
-		WiFiSocket.close(i);
-	}
-
 	if (_mode == WL_AP_MODE) {
 		m2m_wifi_disable_ap();
 	} else {
@@ -713,11 +668,9 @@ void WiFiClass::end()
 		m2m_wifi_disconnect();
 	}
 
-#ifdef CONF_PERIPH
 	// WiFi led OFF (rev A then rev B).
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO15, 1);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO4, 1);
-#endif
 
 	socketDeinit();
 
@@ -734,12 +687,12 @@ uint8_t *WiFiClass::macAddress(uint8_t *mac)
 {
 	m2m_wifi_get_mac_address(mac);
 	byte tmpMac[6], i;
-	
+
 	m2m_wifi_get_mac_address(tmpMac);
-	
+
 	for(i = 0; i < 6; i++)
 		mac[i] = tmpMac[5-i];
-		
+
 	return mac;
 }
 
@@ -900,7 +853,7 @@ int32_t WiFiClass::RSSI(uint8_t pos)
 }
 
 uint8_t WiFiClass::encryptionType()
-{ 
+{
 	int8_t net = scanNetworks();
 
 	for (uint8_t i = 0; i < net; ++i) {
@@ -995,27 +948,23 @@ uint8_t WiFiClass::status()
 
 int WiFiClass::hostByName(const char* aHostname, IPAddress& aResult)
 {
-	
+
 	// check if aHostname is already an ipaddress
 	if (aResult.fromString(aHostname)) {
-		// if fromString returns true we have an IP address ready 
+		// if fromString returns true we have an IP address ready
 		return 1;
 
 	} else {
-#ifdef CONF_PERIPH
 		// Network led ON (rev A then rev B).
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 0);
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO5, 0);
-#endif
 
 		// Send DNS request:
 		_resolve = 0;
 		if (gethostbyname((uint8 *)aHostname) < 0) {
-#ifdef CONF_PERIPH
 			// Network led OFF (rev A then rev B).
 			m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 1);
 			m2m_periph_gpio_set_val(M2M_PERIPH_GPIO5, 1);
-#endif
 			return 0;
 		}
 
@@ -1025,11 +974,9 @@ int WiFiClass::hostByName(const char* aHostname, IPAddress& aResult)
 			m2m_wifi_handle_events(NULL);
 		}
 
-#ifdef CONF_PERIPH
 		// Network led OFF (rev A then rev B).
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 1);
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO5, 1);
-#endif
 
 		if (_resolve == 0) {
 			return 0;
@@ -1080,21 +1027,17 @@ int WiFiClass::ping(const String &hostname, uint8_t ttl)
 
 int WiFiClass::ping(IPAddress host, uint8_t ttl)
 {
-#ifdef CONF_PERIPH
 	// Network led ON (rev A then rev B).
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 0);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO5, 0);
-#endif
 
 	uint32_t dstHost = (uint32_t)host;
 	_resolve = dstHost;
 
 	if (m2m_ping_req((uint32_t)host, ttl, &ping_cb) < 0) {
-#ifdef CONF_PERIPH
 		// Network led OFF (rev A then rev B).
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 1);
 		m2m_periph_gpio_set_val(M2M_PERIPH_GPIO5, 1);
-#endif
 		//  Error sending ping request
 		return WL_PING_ERROR;
 	}
@@ -1105,11 +1048,9 @@ int WiFiClass::ping(IPAddress host, uint8_t ttl)
 		m2m_wifi_handle_events(NULL);
 	}
 
-#ifdef CONF_PERIPH
 	// Network led OFF (rev A then rev B).
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO16, 1);
 	m2m_periph_gpio_set_val(M2M_PERIPH_GPIO5, 1);
-#endif
 
 	if (_resolve == dstHost) {
 		_resolve = 0;

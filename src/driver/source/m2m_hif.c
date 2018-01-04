@@ -83,9 +83,6 @@ typedef struct {
 }tstrHifContext;
 
 volatile tstrHifContext gstrHifCxt;
-#ifdef ARDUINO
-volatile uint8 hif_receive_blocked = 0;
-#endif
 
 static void isr(void)
 {
@@ -99,9 +96,6 @@ static sint8 hif_set_rx_done(void)
 	uint32 reg;
 	sint8 ret = M2M_SUCCESS;
 
-#ifdef ARDUINO
-	hif_receive_blocked = 0;
-#endif
 	gstrHifCxt.u8HifRXDone = 0;
 #ifdef NM_EDGE_INTERRUPT
 	nm_bsp_interrupt_ctrl(1);
@@ -433,6 +427,10 @@ ERR2:
 	return ret;
 }
 
+#ifdef ARDUINO
+volatile uint8 hif_small_xfer = 0;
+#endif
+
 /**
 *	@fn		hif_isr
 *	@brief	Host interface interrupt service routine
@@ -576,9 +574,10 @@ static sint8 hif_isr(void)
 					ret = M2M_ERR_BUS_FAIL;
 					goto ERR1;
 				}
-
 #ifdef ARDUINO
-				if (hif_receive_blocked) {
+				if(hif_small_xfer)
+				{
+					/*Pause SPI transfer*/
 					return ret;
 				}
 #endif
@@ -616,6 +615,10 @@ ERR1:
 	return ret;
 }
 
+#ifdef ARDUINO
+void Socket_ReadSocketData_Small(void);
+#endif
+
 /**
 *	@fn		hif_handle_isr(void)
 *	@brief	Handle interrupt received from NMC1500 firmware.
@@ -627,7 +630,9 @@ sint8 hif_handle_isr(void)
 	sint8 ret = M2M_SUCCESS;	
 
 #ifdef ARDUINO
-	if (hif_receive_blocked) {
+	if(hif_small_xfer) {
+		/*SPI protocol paused to allow small transfer*/
+		Socket_ReadSocketData_Small();
 		return ret;
 	}
 #endif
@@ -640,7 +645,7 @@ sint8 hif_handle_isr(void)
 		{
 			ret = hif_isr();
 #ifdef ARDUINO
-			if (hif_receive_blocked) {
+			if(hif_small_xfer) {
 				return ret;
 			}
 #endif

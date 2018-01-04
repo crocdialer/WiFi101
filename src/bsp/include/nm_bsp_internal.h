@@ -52,7 +52,7 @@
 #include "bsp/include/nm_bsp_samd21.h"
 #endif
 
-#if defined(ARDUINO) && !defined(ARDUINO_SAMD_MKR1000)
+#ifdef ARDUINO
 #define CONF_PERIPH
 #endif
 

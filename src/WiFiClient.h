@@ -23,44 +23,41 @@
 #include <Arduino.h>
 #include <Client.h>
 #include <IPAddress.h>
-
-extern "C" {
-	#include "socket/include/socket.h"
-}
+#include "shared_ptr.hpp"
+#include "socket/include/socket_buffer.h"
 
 class WiFiClient : public Client {
 
 public:
 	WiFiClient();
-	WiFiClient(uint8_t sock);
+	WiFiClient(uint8_t sock, uint8_t parentsock = 0);
+	WiFiClient(const WiFiClient& other);
 
 	uint8_t status();
-	
+
 	int connectSSL(IPAddress ip, uint16_t port);
 	int connectSSL(const char* host, uint16_t port);
-	virtual int connect(IPAddress ip, uint16_t port);
-	virtual int connect(const char* host, uint16_t port);
-	virtual size_t write(uint8_t);
-	virtual size_t write(const uint8_t *buf, size_t size);
-	virtual int available();
-	virtual int read();
-	virtual int read(uint8_t *buf, size_t size);
-	virtual int peek();
-	virtual void flush();
-	virtual void stop();
-	virtual uint8_t connected();
-	virtual operator bool();
-	bool operator==(const WiFiClient &other) const;
-	bool operator!=(const WiFiClient &other) const;
+	virtual int connect(IPAddress ip, uint16_t port) override;
+	virtual int connect(const char* host, uint16_t port) override;
+	virtual size_t write(uint8_t) override;
+	virtual size_t write(const uint8_t *buf, size_t size) override;
+	virtual int available() override;
+	virtual int read() override;
+	virtual int read(uint8_t *buf, size_t size) override;
+	virtual int peek() override;
+	virtual void flush() override;
+	virtual void stop() override;
+	virtual uint8_t connected() override;
+    uint32_t flag() const;
+	explicit operator bool() override;
+	virtual WiFiClient& operator=(const WiFiClient &other);
+    bool operator==(const WiFiClient &other) const;
+    bool operator!=(const WiFiClient &other) const;
 
 	using Print::write;
 
-	virtual IPAddress remoteIP();
-	virtual uint16_t remotePort();
-
 private:
-	SOCKET _socket;
-
+    shared_ptr<struct WiFiClientImpl> m_impl;
 	int connect(const char* host, uint16_t port, uint8_t opt);
 	int connect(IPAddress ip, uint16_t port, uint8_t opt, const uint8_t *hostname);
 };

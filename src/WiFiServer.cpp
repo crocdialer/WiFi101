@@ -17,14 +17,20 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-#include "utility/WiFiSocket.h"
+extern "C" {
+	#include "socket/include/socket.h"
+}
 
+#include "WiFi101.h"
 #include "WiFiClient.h"
 #include "WiFiServer.h"
+
+#define READY	(_flag & SOCKET_BUFFER_FLAG_BIND)
 
 WiFiServer::WiFiServer(uint16_t port)
 {
 	_port = port;
+	_flag = 0;
 }
 
 void WiFiServer::begin()
@@ -41,53 +47,78 @@ uint8_t WiFiServer::begin(uint8_t opt)
 {
 	struct sockaddr_in addr;
 
+	_flag = 0;
+
 	// Initialize socket address structure.
 	addr.sin_family = AF_INET;
 	addr.sin_port = _htons(_port);
 	addr.sin_addr.s_addr = 0;
 
 	// Open TCP server socket.
-	if ((_socket = WiFiSocket.create(AF_INET, SOCK_STREAM, opt)) < 0) {
+	if ((_socket = socket(AF_INET, SOCK_STREAM, opt)) < 0) {
 		return 0;
 	}
+
+	// Add socket buffer handler:
+	socketBufferRegister(_socket, &_flag, 0, 0, 0);
 
 	// Bind socket:
-	if (!WiFiSocket.bind(_socket, (struct sockaddr *)&addr, sizeof(struct sockaddr_in))) {
-		WiFiSocket.close(_socket);
+	if (bind(_socket, (struct sockaddr *)&addr, sizeof(struct sockaddr_in)) < 0) {
+		close(_socket);
 		_socket = -1;
 		return 0;
 	}
 
-	// Listen socket:
-	if (!WiFiSocket.listen(_socket, 0)) {
-		WiFiSocket.close(_socket);
+	// Wait for connection or timeout:
+	unsigned long start = millis();
+	while (!READY && millis() - start < 2000) {
+		m2m_wifi_handle_events(NULL);
+	}
+	if (!READY) {
+		close(_socket);
 		_socket = -1;
 		return 0;
 	}
+	_flag &= ~SOCKET_BUFFER_FLAG_BIND;
 
 	return 1;
 }
 
 WiFiClient WiFiServer::available(uint8_t* status)
 {
-	if (status != NULL) {
-		*status = 0;
+	uint32_t flag;
+	m2m_wifi_handle_events(NULL);
+
+	if(_flag & SOCKET_BUFFER_FLAG_SPAWN){
+		flag = _flag;
+		_flag &= ~SOCKET_BUFFER_FLAG_SPAWN_SOCKET_MSK;
+		_flag &= ~SOCKET_BUFFER_FLAG_SPAWN;
+		if(status){ *status = 0; }
+		return WiFiClient(((flag & SOCKET_BUFFER_FLAG_SPAWN_SOCKET_MSK) >> SOCKET_BUFFER_FLAG_SPAWN_SOCKET_POS), _socket + 1);
 	}
+    else{
+		WiFiClient* available_clients[TCP_SOCK_MAX];
+        size_t num_clients = 0;
 
-	if (_socket != -1) {
-		SOCKET child = WiFiSocket.accepted(_socket);
+		for(int sock = 0; sock < TCP_SOCK_MAX; sock++){
+			WiFiClient *client_ptr = WiFi._client + sock;
 
-		if (child > -1) {
-			return WiFiClient(child);
-		}
+			if(*client_ptr && client_ptr->connected()){
+                bool spawned_by_server =
+                    ((client_ptr->flag() >> SOCKET_BUFFER_FLAG_PARENT_SOCKET_POS) & 0xff) ==
+                    (uint8)(_socket + 1);
 
-		for (SOCKET s = 0; s < TCP_SOCK_MAX; s++) {
-			if (WiFiSocket.hasParent(_socket, s) && WiFiSocket.available(s)) {
-				return WiFiClient(s);
+                // if the client was spawned by the server socket, add it to available clients
+                if(spawned_by_server){ available_clients[num_clients++] = client_ptr; }
 			}
 		}
-	}
 
+        // of our available clients, if any, return a random one
+        if(num_clients){
+            uint8_t random_index = rand() % num_clients;
+            return *available_clients[random_index];
+        }
+	}
 	return WiFiClient();
 }
 
@@ -103,17 +134,16 @@ size_t WiFiServer::write(uint8_t b)
 
 size_t WiFiServer::write(const uint8_t *buffer, size_t size)
 {
-	if (_socket == -1) {
-		return 0;
-	}
-
 	size_t n = 0;
+	WiFiClient client;
 
 	for (int sock = 0; sock < TCP_SOCK_MAX; sock++) {
-		if (WiFiSocket.hasParent(_socket, sock)) {
-			n += WiFiSocket.write(sock, buffer, size);
+		client = WiFi._client[sock];
+		if (client.connected()) {
+			if (((client.flag() >> SOCKET_BUFFER_FLAG_PARENT_SOCKET_POS) & 0xff) == (uint8)(_socket + 1)) {
+				n += client.write(buffer, size);
+			}
 		}
 	}
-
 	return n;
 }
